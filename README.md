@@ -17,28 +17,15 @@ Outcome: the agent reaches the goal in the minimum number of steps across the te
 
 Phase 2: Replication of the avatar games (mePOMDP)
 
-A replication of Study 1 in Paul et al. (2025), whose meta-POMDP (mePOMDP) models centering at the meta-level. The aim was to test the original model's claim that it also represents self-location at a lower level.
+Performance is measured across agent types, namely the Optimal mePOMDP and Resource-limited mePOMDP and game types (Logic, Contingency and Switching Embodiments) from the original model. 
 
-Games: Logic, Contingency and Change Agent (switching). Each has four avatars (only one is the agent's own) and four candidate goals. The agent has a meta-level belief: over "theories", each theory being one avatar as self plus an action-to-movement mapping. The agent observes which avatar moves consistently with its actions and updates its beliefs by Bayesian inference. The agent explores until the ratio of its top two theories passes a confidence threshold. It then centres on that theory and walks to the nearest candidate goal using A*.
-
-Agent types compared:
-Optimal mePOMDP: attends to every movement of all four avatars.
-Resource-limited mePOMDP: same inference, but with constraints on attention and memory, which makes it closer to human performance.
-
-Phase 3: Enriched POMDP (ePOMDP)
-
-Phase 3 combines the two earlier models. It keeps the mePOMDP's meta-level avatar identification and adds two enrichment layers to the lower-level problem-solving. Candidate goals are known to the agent in advance, and reward is given only on reaching the true goal.
+Phase 3: Adding Enrichment layers to the standard POMDP in Phase 1
 
 Enrichment 1: Expected distance minimisation
 Instead of heading for the nearest candidate (as A* does), the agent picks the candidate with the lowest expected distance to the true goal. This expectation is taken over its beliefs about candidate goals and world states, and includes the cost of backtracking if the candidate turns out to be wrong. The agent avoids being lured into a dead-end corridor that holds one nearby candidate, and visits clusters of candidates first. 
 
 Enrichment 2: Corridor detection
-The agent stores representations about itself in the environment: the entry point to a possible corridor, and a record of the last three steps with walls observed on both sides. It centres on one of two strategies:
-
-P1: move to reduce the distance to the target goal.
-P2: backtrack to the corridor's entry point.
-
-When the stored representations indicate "I am in a corridor", the agent switches from P1 to P2, then recentres on P1 with an updated target.The agent forms self-locating beliefs ("I am in a dead-end corridor") and acts on them, leaving mid-way instead of walking to the end.
+The agent stores representations about itself in the environment: the entry point to a possible corridor, and a record of the last three steps with walls observed on both sides. It centres on one of two strategies of either moving to reduce the distance to the target goal (forward) or backtracking to the corridor's entry point.When the stored representations indicate "I am in a corridor", the agent switches between strategies.
 
 Repository structure
 1. phase1_pomdp/          
@@ -51,4 +38,5 @@ The avatar-game data and the code for the meta-POMDP and resource-limited meta-P
 
 References
 Paul, L. A., Mills, T., Ullman, T., De Freitas, J., Colas, C., & Tenenbaum, J. (2025). Reverse-engineering the centered self.
+
 Perry, J. (1979). The problem of the essential indexical. Noûs, 13(1), 3–21.
