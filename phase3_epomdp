@@ -1,0 +1,908 @@
+import numpy as np
+import random
+from collections import defaultdict
+import itertools
+import heapq
+
+def manhattan_distance(loc1, loc2):
+    ''''''
+    return abs(loc1[0] - loc2[0]) + abs(loc1[1] - loc2[1])
+
+def generate_initial_belief(grid_size, agent_loc, known_adjacent_walls, goal_distance, max_walls=1, candidate_goals = None):
+    """
+    Generates belief over each grid cell compatible with:
+    - Fixed agent location
+    - Known wall status in adjacent cells
+    - Unknown walls/rewards elsewhere 
+    Returns:
+    dict: Belief distribution {cell: probability} with each cell having a probability distribution in the form of a tuple 
+    with the possibility of being clear, wall or reward location
+    Generate initial belief over each grid cell, with constraint:
+    - Reward can only exist in cells at Manhattan distance = goal_distance.
+    """
+    height, width = grid_size
+    all_cells = set(itertools.product(range(height), range(width)))
+    
+    # Get adjacent cells (4-direction neighbors)
+    adjacent = set()
+    for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+        nx, ny = agent_loc[0] + dx, agent_loc[1] + dy
+        if 0 <= nx < height and 0 <= ny < width:
+            adjacent.add((nx, ny))
+    
+    # Known free adjacent cells (adjacent - known walls)
+    known_adjacent_free = adjacent - known_adjacent_walls
+    
+    # Fixed cells (agent + adjacent)
+    fixed_cells = {agent_loc} | adjacent
+    variable_cells = all_cells - fixed_cells
+    
+
+    if candidate_goals is not None:                           #NEW- Candidate goals known beforehand
+        candidate_goal_cells = set(candidate_goals)
+    else:
+        candidate_goal_cells = {
+            cell for cell in variable_cells 
+            if manhattan_distance(agent_loc, cell) == goal_distance
+        }
+    num_goal_candidates = len(candidate_goal_cells)
+    
+    belief = {}
+    for cell in variable_cells:
+        if cell in candidate_goal_cells:
+            # reward probability spread uniformly among valid candidates
+            p_reward = 1.0 / num_goal_candidates if num_goal_candidates > 0 else 0.0
+            # remaining split between clear & wall (say equally)
+            p_clear = (1 - p_reward) / 2
+            p_wall = (1 - p_reward) / 2
+        else:
+            # cannot be goal cell
+            p_reward = 0.0
+            p_clear, p_wall = 0.5, 0.5
+        belief[cell] = (p_clear, p_wall, p_reward)
+
+    for cell in fixed_cells:
+        if cell == agent_loc or cell in known_adjacent_free:
+            belief[cell] = (1, 0, 0)
+        elif cell in known_adjacent_walls:
+            belief[cell] = (0, 1, 0)
+        
+    return belief
+
+
+def fixed_reward(grid_size, reward_loc):
+    rows, columns = grid_size
+    reward = {}
+    for r in range(rows):
+        for c in range(columns):
+            cell = (r,c)
+            reward[cell] = manhattan_distance(cell, reward_loc)
+
+    return reward
+
+class GridWorldPOMDP:
+    def __init__(self, grid_size, agent_pos, reward_loc, wall_locs, lookahead_depth, candidate_goals = None, rewards={'L': 10}, costs={'move': -0.1, 'null': -5.0}, R_max=100):
+        self.grid_size = grid_size
+        self.agent_pos = agent_pos
+        self.reward_loc = reward_loc
+        self.wall_locs = set(wall_locs)
+        self.fixed_reward_for_cell = fixed_reward(grid_size, reward_loc)
+        # Calculate adjacent cells to agent
+        adjacent_cells = self.get_adjacent_positions(self.agent_pos)
+        
+        # Determine known adjacent walls (intersection of adjacent cells and actual walls)
+        known_adjacent_walls = set(adjacent_cells) & set(self.wall_locs)
+
+        # From fixed_reward, compute true distance to goal
+        self.goal_distance = self.fixed_reward_for_cell[self.agent_pos]
+
+        self.candidate_goals = set(candidate_goals) if candidate_goals else None
+        
+        # Generate initial belief distribution
+        self.belief = generate_initial_belief(
+            grid_size=self.grid_size,
+            agent_loc=self.agent_pos,
+            known_adjacent_walls=known_adjacent_walls,
+            goal_distance=self.goal_distance,
+            max_walls=1,
+            candidate_goals = self.candidate_goals
+        )
+
+        self.dead_end_cells = set()  # stores cells known to be dead ends
+        self.best_trajectory = None 
+        self.last_pos = None  # for keeping track of last position of the agent in the previous lookahead
+        self.visited_global = set()
+
+
+              
+        self.actions = ['null', 'up', 'down', 'left', 'right']
+        self.rewards = rewards
+        self.costs = costs
+        self.lookahead_depth = lookahead_depth    # number of steps ahead that the agent plans for
+        #self.utility_dict = self.utility_fn()
+        #self.visit_counts = defaultdict(int)    # to count the number of times a state is visited
+        self.wall_history = []
+        self.dead_end_cells = set()
+        self.current_target = None
+        self.invalid_targets = set()
+        self.in_corridor = False
+        #self.backtrack_direction = None
+        self.recent_positions = []
+        self.last_branching_point = None         # entry point to the corridor representation
+        self.corridor_entry = None
+        self.path_stack = []
+        self.bad_corridor_cells = set()          # to initiate backtracking when in corridor, forward cells are bad cells
+
+
+    def get_adjacent_positions(self, agent_pos):
+        """Get set of adjacent grid positions for a given state"""
+        x, y = agent_pos
+        adjacent_positions = []
+    
+        for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < self.grid_size[0] and 
+                0 <= ny < self.grid_size[1]):
+                adjacent_positions.append((nx, ny))
+    
+        return adjacent_positions
+         
+
+
+    def transition_fn(self, agent_pos, action):
+        """
+    Given the current agent position and an action, return the next position.
+    Considers grid boundaries and walls.
+        """
+        x, y = agent_pos  # x=row, y=col
+
+        if action == 'null':
+            return agent_pos
+        elif action == 'up':
+            new_loc = (x-1, y)  # row decreases
+        elif action == 'down':
+            new_loc = (x+1, y)  # row increases
+        elif action == 'left':
+            new_loc = (x, y-1)  # column decreases
+        elif action == 'right':
+            new_loc = (x, y+1)  # column increases
+        else:
+            return agent_pos  # invalid action
+
+    # Check if new_loc is within the grid and not a wall
+        if (0 <= new_loc[0] < self.grid_size[0] and
+            0 <= new_loc[1] < self.grid_size[1]):
+            return new_loc
+        else:
+            return agent_pos
+
+            
+
+    def observation_fn(self, new_agent_pos):
+        """ Generates actual observation based on transitioned state. Returns a dictionary of observations with the actual observations 
+        received for the agent location and adjacent cell locations in the transitioned state. """
+        
+        observations = {}
+        
+        # Observation for current cell location of agent
+        if new_agent_pos == self.reward_loc:
+            observations[new_agent_pos] = 'reward'
+        else:
+            x, y = new_agent_pos
+            adjacent_wall = any( (x+dx, y+dy) in self.wall_locs 
+                              for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)] )
+        
+            if adjacent_wall:
+                observations[new_agent_pos] = 'near wall'
+            else:
+                observations[new_agent_pos] = 'clear' 
+
+        # Observation of cells adjacent to agent location
+        x, y = new_agent_pos
+        for dx, dy in [(0,1), (0,-1), (-1,0), (1,0)]:
+            neighbor = (x + dx, y + dy)
+        # Only consider valid grid positions
+            if 0 <= neighbor[0] < self.grid_size[0] and 0 <= neighbor[1] < self.grid_size[1]:
+                if neighbor == self.reward_loc:
+                    observations[neighbor] = 'reward'
+                elif neighbor in self.wall_locs:
+                    observations[neighbor] = 'wall'
+                else:
+                    observations[neighbor] = 'clear'
+
+        return observations
+
+    
+
+    def update_belief(self, action, agent_pos, observation_dict):
+        """
+        Proper Bayesian belief update following POMDP formula:
+        b'(s') ∝ O(o|s',a) * Σ_s [T(s'|s,a) * b(s)]
+    
+        Key improvements:
+        1. Uses prior belief for each cell independently
+        2. Updates agent position AFTER belief calculation
+        3. Only updates new position based on observation
+        """
+    # Create new belief container 
+        new_belief = {}
+    # Store a copy of original cell beliefs before update
+        #prior_cell_belief = self.belief.copy()
+    
+    # Calculate posteriors using PRIOR beliefs for each cell
+        for cell in self.belief:
+        # Get PRIOR probabilities for each cell
+            p_clear, p_wall, p_reward = self.belief[cell]
+        
+        # Get observation likelihood for each cell that has been observed
+            if cell in observation_dict:
+                obs = observation_dict[cell]
+                if obs == 'near wall':
+                    l_clear, l_wall, l_reward = 1.0, 0.0, 0.0
+                elif obs == 'wall':
+                    l_clear, l_wall, l_reward = 0.0, 1.0, 0.0
+                elif obs == 'clear':
+                    l_clear, l_wall, l_reward = 1.0, 0.0, 0.0
+                elif obs == 'reward':
+                    l_clear, l_wall, l_reward = 0.0, 0.0, 1.0
+            else:
+            # Unobserved cells: likelihood = 1 for all states
+                l_clear, l_wall, l_reward = 1.0, 1.0, 1.0
+
+        
+        # Bayesian update for observed cells: posterior ∝ prior * likelihood
+            posterior_clear = p_clear * l_clear
+            posterior_wall = p_wall * l_wall
+            posterior_reward = p_reward * l_reward
+
+            new_belief[cell] = posterior_clear, posterior_wall, posterior_reward
+            
+        # Updating belief for candidate goal cells based on reward information received from the agent_pos cell i.e. how far it is from the actual goal cell
+        reward_info = self.reward_info(agent_pos)
+        for cell in new_belief:
+            p_clear, p_wall, p_reward = new_belief[cell]
+            if p_reward > 0:
+                expected = manhattan_distance(agent_pos, cell)
+                if expected != reward_info:
+                    # This cell cannot be the goal
+                    p_reward = 0.0
+
+            new_belief[cell] = (p_clear, p_wall, p_reward)
+            
+        # Enforce global reward constraint
+        if any(obs == 'reward' for obs in observation_dict.values()):
+            reward_cell = next(c for c, obs in observation_dict.items() if obs == 'reward')
+            for cell in new_belief:
+                if cell != reward_cell:
+                    p_clear, p_wall, _ = new_belief[cell]
+                    total = p_clear + p_wall
+                    if total > 0:
+                        new_belief[cell] = (p_clear/total, p_wall/total, 0.0)
+
+    #  Normalize probabilities within each cell
+        for cell in new_belief:
+            p_clear, p_wall, p_reward = new_belief[cell]
+            total = p_clear + p_wall + p_reward
+            if total > 0:
+                new_belief[cell] = (p_clear/total, p_wall/total, p_reward/total)
+
+    #  Normalize reward probabilities across all cells
+        total_reward = sum(b[2] for b in new_belief.values())
+        if total_reward > 0:
+            for cell in new_belief:
+                p_clear, p_wall, p_reward = new_belief[cell]
+                new_belief[cell] = (p_clear, p_wall, p_reward / total_reward)
+
+
+        self.belief = new_belief
+        return self.belief
+                
+    
+    
+
+    def reward_info(self, agent_pos):
+        reward_info = self.fixed_reward_for_cell[agent_pos]
+        return reward_info
+
+
+   
+
+    def expected_cost(self, agent_pos):
+
+    # -------------------------
+    # Step 1: extract candidates
+    # -------------------------
+        candidates = []
+
+        for cell, (p_clear, p_wall, p_reward) in self.belief.items():
+            if p_reward > 0 and cell not in self.invalid_targets:
+                candidates.append((cell, p_reward))
+
+        if len(candidates) == 0:
+            return None
+
+    # -------------------------
+    # Step 2: compute expected distance
+    # -------------------------
+        costs = []
+
+        for i, (Gi, pi) in enumerate(candidates):
+
+        # d(s, Gi)
+            cost = manhattan_distance(agent_pos, Gi)
+
+        # Σ P(Gj) * d(Gi, Gj) - summation over all candidate goals
+            for j, (Gj, pj) in enumerate(candidates):
+                if i == j:
+                    continue
+                cost += pj * manhattan_distance(Gi, Gj)
+
+            costs.append(cost)
+
+    # -------------------------
+    # Step 3: select best
+    # -------------------------
+        best_idx = int(np.argmin(costs))
+        best_goal = candidates[best_idx][0]
+
+        print("\n Expected Cost Selection (filtered):")
+        for (g, p), c in zip(candidates, costs):
+            print(f"Goal {g} | P={p:.3f} | EC={c:.3f}")
+
+        print(" Selected:", best_goal)
+
+        return best_goal
+
+
+
+    def plan_path_to_target(self, start, goal):
+        """
+        Belief-aware path planner.
+    
+        Inputs:
+            start: (x, y) current agent position
+            goal: (x, y) selected target goal
+
+        Returns:
+            path: list of cells from next step to goal
+              e.g. [(x1,y1), (x2,y2), ...]
+            or [] if no path found
+        """
+
+    # -------------------------
+    # Heuristic: Manhattan distance
+    # -------------------------
+        def heuristic(a, b):
+            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    # -------------------------
+    # Priority queue (f = g + h)
+    # -------------------------
+        open_set = []
+        heapq.heappush(open_set, (0, start))
+
+    # -------------------------
+    # Track best paths
+    # -------------------------
+        came_from = {}
+        g_score = {start: 0}
+
+    # -------------------------
+    # Main loop
+    # -------------------------
+        while open_set:
+            _, current = heapq.heappop(open_set)
+
+        # -------------------------
+        # Goal reached → reconstruct path
+        # -------------------------
+            if current == goal:
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.reverse()
+                return path
+
+        # -------------------------
+        # Explore neighbors
+        # -------------------------
+            for action in ['up', 'down', 'left', 'right']:
+
+                neighbor = self.transition_fn(current, action)
+
+                
+            # Block going back into corridor at branching point
+                if hasattr(self, "forbidden_direction") and self.in_corridor:
+                    dx = neighbor[0] - current[0]
+                    dy = neighbor[1] - current[1]
+
+                    if (dx, dy) == self.forbidden_direction:
+                        continue
+
+            # Skip invalid/no movement
+                if neighbor == current:
+                    continue
+
+                
+                if neighbor in self.bad_corridor_cells:
+                    continue   
+
+            # -------------------------
+            # Belief about this cell
+            # -------------------------
+                _, p_wall, _ = self.belief.get(neighbor, (0, 0, 0))
+
+            # Hard block if very likely wall
+                if p_wall > 0.8:
+                    continue
+
+            # -------------------------
+            # Movement cost
+            # -------------------------
+                base_cost = 1
+
+            # Penalize uncertainty
+                uncertainty_penalty = 5 * p_wall
+                move_cost = base_cost + uncertainty_penalty
+
+# 🔴 Corridor penalty
+                if self.in_corridor and self.corridor_entry is not None:
+
+    # direction of this move
+                    dx = neighbor[0] - current[0]
+                    dy = neighbor[1] - current[1]
+
+    # distance to entry
+                    curr_dist = manhattan_distance(current, self.corridor_entry)
+                    next_dist = manhattan_distance(neighbor, self.corridor_entry)
+
+    # moving deeper into corridor
+                    if next_dist > curr_dist:
+                        move_cost += 20   # strong penalty
+
+
+  
+
+            # -------------------------
+            # Update cost
+            # -------------------------
+                tentative_g = g_score[current] + move_cost
+
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    g_score[neighbor] = tentative_g
+
+                    f_score = tentative_g + heuristic(neighbor, goal)
+
+                    heapq.heappush(open_set, (f_score, neighbor))
+                    came_from[neighbor] = current
+
+    # -------------------------
+    # No path found
+    # -------------------------
+        return []
+
+   
+   
+    def policy(self, agent_pos, observation_dict=None, first_step=False, belief=None, R_max=100):
+
+        target = None
+
+        if belief is None:
+            belief = self.belief
+
+    # -------------------------
+    # INIT variables if missing
+    # -------------------------
+        if not hasattr(self, "in_corridor"):
+            self.in_corridor = False
+
+        if not hasattr(self, "last_branching_point"):
+            self.last_branching_point = None
+
+        if not hasattr(self, "corridor_entry"):
+            self.corridor_entry = None 
+            
+        if not hasattr(self, "recent_positions"):
+            self.recent_positions = []
+
+        # ------------------------- # TRACK position history (for oscillation detection) # ------------------------- 
+        self.recent_positions.append(agent_pos) 
+        if len(self.recent_positions) > 4:
+            self.recent_positions.pop(0) 
+            
+         # The last cell before entering the corridor
+        if self.is_branching_point(agent_pos):
+            self.last_branching_point = agent_pos
+
+    # -------------------------
+    # STEP 0: detect corridor
+    # -------------------------
+        dead_end = False
+        if observation_dict is not None:
+            dead_end = self.detect_corridor_dead_end( agent_pos, observation_dict)
+
+    # -------------------------
+    # STEP 1: ENTER corridor mode
+    # -------------------------
+        if dead_end and not self.in_corridor:
+            print(" ENTERING CORRIDOR MODE")
+
+            self.in_corridor = True
+            self.current_target = self.current_target  # unchanged
+            if self.last_branching_point is not None:
+                self.corridor_entry = self.last_branching_point
+
+            elif self.last_pos is not None:
+                self.corridor_entry = self.last_pos
+            else:
+                self.corridor_entry = agent_pos  # last fallback
+                
+
+        if self.in_corridor:
+
+            print(" Moving toward entry:", self.corridor_entry)
+
+            if agent_pos == self.corridor_entry:
+                print(" Corridor exited")
+                self.in_corridor = False
+    
+    #  Mark recent corridor path as bad
+                for pos in self.recent_positions:
+                    self.bad_corridor_cells.add(pos)
+                return 'null'
+
+                # STEP 2: SET TEMP TARGET (ONLY CHANGE HERE)
+
+            target = self.corridor_entry   # override target
+        else:
+    # normal goal selection
+            if (
+                self.current_target is None or
+                self.belief.get(self.current_target, (0,0,0))[2] == 0
+            ):
+                self.current_target = self.expected_cost(agent_pos)
+
+            target = self.current_target
+
+
+
+
+    # -------------------------
+    # STEP 5: PLAN PATH 
+    # -------------------------
+        path = self.plan_path_to_target(agent_pos, target)
+
+    # -------------------------
+    # STEP 6: HANDLE FAILURE
+    # -------------------------
+        if not path:
+            return 'null'
+
+        next_cell = path[0]
+
+        return self.action_from_transition(agent_pos, next_cell)
+
+    def get_free_neighbors(self, cell):
+        neighbors = self.get_adjacent_positions(cell)
+
+        free = []
+        for n in neighbors:
+            _, p_wall, _ = self.belief.get(n, (0,0,0))
+
+            if p_wall < 0.8:   # not likely a wall
+                free.append(n)
+
+        return free
+
+    def is_branching_point(self, cell):
+        free_neighbors = self.get_free_neighbors(cell)
+
+        return len(free_neighbors) >= 3
+
+    
+    def action_from_transition(self, pos, next_pos):
+        dx, dy = next_pos[0] - pos[0], next_pos[1] - pos[1]
+        if dx == 1 and dy == 0: return 'down'
+        if dx == -1 and dy == 0: return 'up'
+        if dx == 0 and dy == 1: return 'right'
+        if dx == 0 and dy == -1: return 'left'
+        return 'null'
+
+
+    def update_dead_end(self, cell, belief):
+        adj_cells = self.get_adjacent_positions(cell)
+
+        wall_or_boundary_count = 0
+        free_count = 0
+
+        for c in adj_cells:
+        # Out of grid → boundary = wall
+            if not (0 <= c[0] < self.grid_size[0] and 0 <= c[1] < self.grid_size[1]):
+                wall_or_boundary_count += 1
+                continue
+
+        # Believed wall?
+            _, p_wall, _ = belief.get(c, (0,0,0))
+            if p_wall > 0.9:
+                wall_or_boundary_count += 1
+            else:
+                free_count += 1
+
+    # Dead-end if 3 sides are blocked (walls or boundary) and only 1 is free
+        if wall_or_boundary_count >= 3 and free_count == 1:
+            self.dead_end_cells.add(cell)
+            
+    def detect_corridor_dead_end(self, agent_pos, observation_dict):
+        if not hasattr(self, "wall_history"):
+           self.wall_history = []
+           
+        x, y = agent_pos
+
+        def is_wall(cell):
+            return observation_dict.get(cell) == 'wall'
+
+        up = (x-1, y)
+        down = (x+1, y)
+        left = (x, y-1)
+        right = (x, y+1)
+
+    # ✅ TRUE corridor definition
+        vertical_corridor = is_wall(left) and is_wall(right)
+        horizontal_corridor = is_wall(up) and is_wall(down)
+
+        in_corridor = vertical_corridor or horizontal_corridor
+
+    # store only boolean
+        self.wall_history.append(in_corridor)
+
+        if len(self.wall_history) > 3:
+            self.wall_history.pop(0)
+
+    # trigger only if 3 consecutive corridor states
+        return len(self.wall_history) == 3 and all(self.wall_history)
+        
+    def agent_valid_actions(self, agent_pos, observation_dict=None, belief=None, first_step=False):
+        """
+        Return valid actions for the agent given its current position.
+        Uses belief to avoid cells likely to be walls.
+        """
+        x, y = agent_pos
+        valid = ['null']  # staying put is always allowed
+
+        moves = {
+            'up':    (x-1, y),
+            'down':  (x+1, y),
+            'left':  (x, y-1),
+            'right': (x, y+1)
+        }
+
+        for action, (nx, ny) in moves.items():
+            if 0 <= nx < self.grid_size[0] and 0 <= ny < self.grid_size[1]:
+
+            # Determine wall info
+                p_wall = 0.0
+                #if first_step:
+                # At first step, use known adjacent walls
+                #    adjacent = self.get_adjacent_positions(agent_pos)
+                #    known_adjacent_walls = set(adjacent) & self.wall_locs
+                 #   if (nx, ny) in known_adjacent_walls:
+                  #      p_wall = 1.0
+                #else:
+                # Use belief if provided
+                if belief is not None:
+                    _, p_wall, _ = belief.get((nx, ny), (0,0,0))
+                # Otherwise, use observation dict if available
+                elif observation_dict is not None:
+                    obs = observation_dict.get((nx, ny), None)
+                    if obs == 'wall':
+                        p_wall = 1.0
+
+                if p_wall < 0.9:  # allow move if not believed to be a wall
+                    valid.append(action)
+
+        return valid
+
+
+
+    def extract_reward_probabilities(self, belief, grid_size):
+        width, height = grid_size
+        reward_probs = np.zeros((height, width))
+        for (x, y), (p_clear, p_wall, p_reward) in belief.items():
+            reward_probs[y, x] = p_reward
+        return reward_probs
+
+
+
+def load_grid_from_txt(path):
+    grid = []
+    with open(path, 'r') as f:
+        for line in f:
+            grid.append(list(map(int, line.strip().split())))
+    
+    grid = np.array(grid)
+
+    agent_positions = []
+    true_goals = []
+    wall_locs = []
+    candidate_goals = []
+
+    rows, cols = grid.shape
+
+    for i in range(rows):
+        for j in range(cols):
+            val = grid[i, j]
+
+            if val == 8:
+                agent_positions.append((i, j))
+
+            elif val == 3:   
+                true_goals.append((i, j))
+                candidate_goals.append((i, j))
+
+            elif val == 1:
+                wall_locs.append((i, j))
+
+            elif val == 2:
+                candidate_goals.append((i, j))
+
+    print("RAW GRID:")
+    for row in grid:
+        print(row)
+
+    print("UNIQUE VALUES:", set(grid.flatten()))
+
+    # ✅ validations
+    if len(true_goals) != 1:
+        print("DEBUG: true goals found:", true_goals)
+        raise ValueError("Grid must have exactly ONE true goal (value=3)")
+
+    if len(agent_positions) != 1:
+        raise ValueError("Grid must have exactly ONE agent start (value=8)")
+
+    return {
+        "grid_size": grid.shape,
+        "agent_pos": agent_positions[0],
+        "reward_loc": true_goals[0],
+        "wall_locs": wall_locs,
+        "candidate_goals": candidate_goals,
+        "grid": grid
+    }   
+
+    
+def load_specific_grid():
+    grid_path = r"C:\Users\admin\Downloads\inferself-main\src\gym_gridworld\envs\logic_u\plan9.txt" 
+
+    config = load_grid_from_txt(grid_path)
+
+    # Add defaults (since configs.py used to provide these)
+    config['rewards'] = {'L': 10}
+    config['costs'] = {'move': -0.1, 'null': -5.0}
+    config['lookahead_depth'] = 3
+
+    return config
+
+def main():
+
+    #  Load grid from file
+    config = load_specific_grid()
+
+    # Start position (manually set or random)
+    start_pos = config['agent_pos']  # <-- change if needed
+
+    pomdp = GridWorldPOMDP(
+        grid_size=config['grid_size'],
+        agent_pos=start_pos,
+        rewards=config['rewards'],
+        costs=config['costs'],
+        reward_loc=config['reward_loc'],
+        wall_locs=config['wall_locs'],
+        lookahead_depth=config['lookahead_depth'],
+        candidate_goals=config['candidate_goals']
+    )
+
+    agent_pos = start_pos
+    trajectory = [agent_pos]
+
+    steps = 0
+    max_steps = 50
+    first_step = True
+    observation_dict = None
+
+    while agent_pos != pomdp.reward_loc and steps < max_steps:
+        prev_pos = agent_pos
+        action = pomdp.policy(
+            agent_pos,
+            observation_dict=observation_dict,
+            first_step=first_step,
+            R_max=100
+        )
+
+        print(f"Step {steps}: Pos={agent_pos}, Action={action}, Target={pomdp.current_target}")
+
+        pomdp.path_stack.append(agent_pos)
+
+        # Move agent
+        new_agent_pos = pomdp.transition_fn(agent_pos, action)
+
+        # Track visited
+        pomdp.visited_global.add(new_agent_pos)
+
+        # Get observation
+        observation_dict = pomdp.observation_fn(new_agent_pos)
+
+        # Update belief
+        pomdp.update_belief(action, new_agent_pos, observation_dict)
+
+        # Dead-end detection
+        pomdp.update_dead_end(new_agent_pos, pomdp.belief)
+
+        # Update state
+        pomdp.last_pos = prev_pos      # store old position
+        agent_pos = new_agent_pos
+        trajectory.append(agent_pos)
+
+        first_step = False
+        steps += 1
+
+    #  Result
+    if agent_pos == pomdp.reward_loc:
+        print(f" Reached goal in {steps} steps")
+    else:
+        print(" Goal not reached")
+
+    visualize_gridworld(
+        grid_size=config['grid_size'],
+        walls=config['wall_locs'],
+        goal=config['reward_loc'],
+        trajectory=trajectory
+    )
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+import numpy as np
+
+def visualize_gridworld(grid_size, walls, goal, trajectory):
+    """
+    Visualize the gridworld environment.
+    grid_size: (rows, cols)
+    walls: list of (row, col) positions
+    goal: (row, col)
+    trajectory: list of (row, col) positions visited by the agent
+    """
+
+    rows, cols = grid_size
+    grid = np.zeros((rows, cols))  # 0 = free
+
+    # Mark walls
+    for (r, c) in walls:
+        grid[r, c] = 1
+
+    # Mark goal
+    grid[goal[0], goal[1]] = 2
+
+    # Colormap: free=white, wall=black, goal=green
+    cmap = ListedColormap(['white', 'black', 'green'])
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.matshow(grid, cmap=cmap, origin='upper')
+
+    if trajectory:
+        traj_r, traj_c = zip(*trajectory)
+        ax.plot(traj_c, traj_r, 'b-', linewidth=2, alpha=0.7)   # path line
+        ax.plot(traj_c, traj_r, 'bo', markersize=6, alpha=0.6)  # path points
+        ax.plot(traj_c[0], traj_r[0], 'go', markersize=10, label='Start')  # start
+        ax.plot(traj_c[-1], traj_r[-1], 'ro', markersize=10, label='End')  # end
+
+    # Grid lines
+    ax.set_xticks(np.arange(-0.5, cols, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, rows, 1), minor=True)
+    ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.8)
+
+    ax.set_title('Agent Path in GridWorld')
+    ax.legend()
+    plt.show()
+
+    
+if __name__ == "__main__":
+    main()
