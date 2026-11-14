@@ -38,7 +38,7 @@ Phase 3: Enriched POMDP (ePOMDP)
 Phase 3 combines the two earlier models. It keeps the mePOMDP's meta-level avatar identification and adds two enrichment layers to the lower-level problem-solving. Candidate goals are known to the agent in advance, and reward is given only on reaching the true goal.
 
 Enrichment 1: Expected distance minimisation
-Instead of heading for the nearest candidate (as A* does), the agent picks the candidate with the lowest expected distance to the true goal. This expectation is taken over its beliefs about candidate goals and world states, and includes the cost of backtracking if the candidate turns out to be wrong. The agent avoids being lured into a dead-end corridor that holds one nearby candidate, and visits clusters of candidates first. On the evaluated grids it averaged 11.2 steps, against 16.4 for the A* baseline.
+Instead of heading for the nearest candidate (as A* does), the agent picks the candidate with the lowest expected distance to the true goal. This expectation is taken over its beliefs about candidate goals and world states, and includes the cost of backtracking if the candidate turns out to be wrong. The agent avoids being lured into a dead-end corridor that holds one nearby candidate, and visits clusters of candidates first. 
 
 Enrichment 2: Corridor detection
 The agent stores representations about itself in the environment: the entry point to a possible corridor, and a record of the last three steps with walls observed on both sides. It centres on one of two strategies:
@@ -46,14 +46,13 @@ The agent stores representations about itself in the environment: the entry poin
 P1: move to reduce the distance to the target goal.
 P2: backtrack to the corridor's entry point.
 
-When the stored representations indicate "I am in a corridor", the agent switches from P1 to P2, then recentres on P1 with an updated target.The agent forms self-locating beliefs ("I am in a dead-end corridor") and acts on them, leaving mid-way instead of walking to the end. This is lower-level centering that goes beyond reward maximisation. 
+When the stored representations indicate "I am in a corridor", the agent switches from P1 to P2, then recentres on P1 with an updated target.The agent forms self-locating beliefs ("I am in a dead-end corridor") and acts on them, leaving mid-way instead of walking to the end.
 
 Repository structure
-1. phase1_pomdp/          # Standard POMDP grid-world agent
-2. phase2_mepomdp/        # Replication: optimal and resource-limited mePOMDP, avatar games
-3. phase3_epomdp/         # Expected distance minimisation and corridor detection
-4. results/               # Plots and comparison figures
-5. README.md
+1. phase1_pomdp/          
+2. phase2_mepomdp/       
+3. phase3_epomdp/                   
+4. README.md
 
 Data and code sources
 The avatar-game data and the code for the meta-POMDP and resource-limited meta-POMDP are from the repository of Paul et al. (2025): Reverse-engineering the centered self (https://github.com/ccolas/inferself/tree/main/src).The POMDP and ePOMDP code, and the comparison plots, were produced for this thesis.
