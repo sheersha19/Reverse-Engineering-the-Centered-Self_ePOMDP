@@ -18,10 +18,10 @@ Phase 3: Adding Enrichment layers to the standard POMDP in Phase 1
 The agent chooses its target by weighing which candidate goal is cheapest to reach overall, instead of heading for the nearest one, which avoids costly detours. It also keeps simple representations of where it is, and uses them to switch strategy, such as backing out when its position suggests a dead end.
 
 Repository structure
-1. phase1_pomdp/          
-2. phase2_mepomdp/       
-3. phase3_epomdp/                   
-4. README.md
+1. phase1_pomdp                
+2. phase3_epomdp (Phase 2 in the inferself repository linked at the end)                   
+3. README.md
+
 
 Data and code sources
 The avatar-game data and the code for the meta-POMDP and resource-limited meta-POMDP are from the repository of Paul et al. (2025): Reverse-engineering the centered self (https://github.com/ccolas/inferself/tree/main/src).The POMDP and ePOMDP code, and the comparison plots, were produced for this thesis.
