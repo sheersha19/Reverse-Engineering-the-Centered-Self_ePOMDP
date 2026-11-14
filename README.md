@@ -60,11 +60,11 @@ When the stored representations indicate "I am in a corridor", the agent switche
 Effect: the agent forms self-locating beliefs ("I am in a dead-end corridor") and acts on them, leaving mid-way instead of walking to the end. This is lower-level centering that goes beyond reward maximisation. It is shown on an illustrative grid (Figure 4.11 of the thesis).
 
 Repository structure
-├── phase1_pomdp/          # Standard POMDP grid-world agent
-├── phase2_mepomdp/        # Replication: optimal and resource-limited mePOMDP, avatar games
-├── phase3_epomdp/         # Expected distance minimisation and corridor detection
-├── results/               # Plots and comparison figures
-└── README.md
+1. phase1_pomdp/          # Standard POMDP grid-world agent
+2. phase2_mepomdp/        # Replication: optimal and resource-limited mePOMDP, avatar games
+3. phase3_epomdp/         # Expected distance minimisation and corridor detection
+4. results/               # Plots and comparison figures
+5. README.md
 
 Data and code sources
 The avatar-game data and the code for the meta-POMDP and resource-limited meta-POMDP are from the repository of Paul et al. (2025): Reverse-engineering the centered self (https://github.com/ccolas/inferself/tree/main/src).
