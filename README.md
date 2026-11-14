@@ -3,15 +3,7 @@ Code for the MSc thesis Modelling Centering in Biological and Artificial Systems
 Author: Sheersha Roy, Vanshika Talus 
 Supervisors: Prof. Sumeet Agarwal, Prof. Don W. F. Dcruz
 
-Overview
-
-Standard Computational models usually treat agency as reward maximisation, i.e. an agent is rational if it picks actions that maximise utility. Such models do not explain how an agent decides which problem it is solving, or how it works out where it stands within that problem. This project explores centering (Paul et al., 2025), the idea that problem-solving is perspectival: an agent acts effectively only after it locates itself within a problem representation. The philosophical basis is the work on self-locating beliefs and the essential indexical (Perry, 1979). A belief such as "I am standing here" motivates action in a way that "X is standing here" does not, because it is centred on the "I".
-
-Centering is studied at two levels:
-Meta-level (higher-level centering)-	Which problem representation should I centre on?	eg: Which of the four avatars is mine?
-Lower level (self-location)-	Where am I within this problem, and what does that imply for how I act?	eg: I am in a dead-end corridor, so I should back out
-
-The code builds POMDP (Partially Observable Markov Decision Process) agents in grid worlds, in three phases (Ongoing)
+Standard Computational models usually treat agency as reward maximisation, i.e. an agent is rational if it picks actions that maximise utility. Such models do not explain how an agent decides which problem it is solving, or how it works out where it stands within that problem. This project explores centering (Paul et al., 2025), the idea that problem-solving is perspectival: an agent acts effectively only after it locates itself within a problem representation. The philosophical basis is the work on self-locating beliefs and the essential indexical (Perry, 1979). A belief such as "I am standing here" motivates action in a way that "X is standing here" does not, because it is centred on the "I".Centering is studied at two levels of Meta-level (higher-level centering)-	Which problem representation should I centre on?	eg: Which of the four avatars is mine? and Lower level (self-location)-	Where am I within this problem, and what does that imply for how I act?	eg: I am in a dead-end corridor, so I should back out. The code builds POMDP (Partially Observable Markov Decision Process) agents in grid worlds, in three phases. 
 
 Phase 1: Standard POMDP for grid-world navigation
 
